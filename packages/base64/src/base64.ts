@@ -1,139 +1,107 @@
 // Base 64 encoding
-
-const BASE_64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-const BASE_64_VALS = Object.create(null);
-
-const getChar = (val: number) => BASE_64_CHARS.charAt(val);
-const getVal = (ch: string) => (ch === '=' ? -1 : (BASE_64_VALS[ch] ?? -2));
-
-for (let i = 0; i < BASE_64_CHARS.length; i++) {
-	BASE_64_VALS[getChar(i)] = i;
+const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const lookup = new Int8Array(256);
+lookup.fill(-1);
+for (let i = 0; i < chars.length; i++) {
+	lookup[chars.charCodeAt(i)] = i;
 }
 
-const newBinary = (len: number) => new Uint8Array(new ArrayBuffer(len));
+export class Base64 {
+	public static encode(input: Uint8Array | number[] | string): string {
+		let bytes: Uint8Array;
 
-const encode = (array: ArrayLike<number> | string) => {
-	if (typeof array === 'string') {
-		const str = array;
-		const binary = newBinary(str.length);
-		for (let i = 0; i < str.length; i++) {
-			const ch = str.charCodeAt(i);
-			if (ch > 0xff) {
-				throw new Error('Not ascii. Base64.encode can only take ascii strings.');
+		if (typeof input === 'string') {
+			bytes = new Uint8Array(input.length);
+			for (let i = 0; i < input.length; i++) {
+				const code = input.charCodeAt(i);
+				if (code > 127) {
+					throw new Error('Not ascii. Base64.encode can only take ascii strings.');
+				}
+				bytes[i] = code;
+			}
+		} else if (Array.isArray(input)) {
+			bytes = Uint8Array.from(input);
+		} else {
+			bytes = input;
+		}
+
+		const len = bytes.length;
+		if (len === 0) return '';
+
+		const chunks: string[] = [];
+		let i = 0;
+
+		while (i < len - 2) {
+			const triple = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+			chunks.push(
+				chars[(triple >> 18) & 0x3f] +
+				chars[(triple >> 12) & 0x3f] +
+				chars[(triple >> 6) & 0x3f] +
+				chars[triple & 0x3f]
+			);
+			i += 3;
+		}
+
+		const extra = len % 3;
+		if (extra === 1) {
+			const triple = bytes[len - 1] << 16;
+			chunks.push(
+				chars[(triple >> 18) & 0x3f] +
+				chars[(triple >> 12) & 0x3f] +
+				'=='
+			);
+		} else if (extra === 2) {
+			const triple = (bytes[len - 2] << 16) | (bytes[len - 1] << 8);
+			chunks.push(
+				chars[(triple >> 18) & 0x3f] +
+				chars[(triple >> 12) & 0x3f] +
+				chars[(triple >> 6) & 0x3f] +
+				'='
+			);
+		}
+
+		return chunks.join('');
+	}
+
+	public static decode(input: string): Uint8Array {
+		const len = input.length;
+		if (len === 0) return new Uint8Array(0);
+
+		let padding = 0;
+		if (input.endsWith('==')) padding = 2;
+		else if (input.endsWith('=')) padding = 1;
+
+		const byteLen = Math.floor((len * 3) / 4) - padding;
+		const buffer = new Uint8Array(byteLen);
+		let bufIdx = 0;
+		let i = 0;
+
+		while (i < len) {
+			const c1 = input.charCodeAt(i++);
+			const c2 = input.charCodeAt(i++);
+			const c3 = input.charCodeAt(i++);
+			const c4 = input.charCodeAt(i++);
+
+			const v1 = c1 === 61 ? 64 : lookup[c1];
+			const v2 = c2 === 61 ? 64 : lookup[c2];
+			const v3 = c3 === 61 ? 64 : lookup[c3];
+			const v4 = c4 === 61 ? 64 : lookup[c4];
+
+			if (v1 < 0 || v2 < 0 || v3 < 0 || v4 < 0 || v1 === 64 || v2 === 64) {
+				throw new Error('invalid base64 string');
 			}
 
-			binary[i] = ch;
+			if (v3 === 64 && v4 !== 64) {
+				throw new Error('invalid base64 string');
+			}
+
+			const chunk = (v1 << 18) | (v2 << 12) | (v3 === 64 ? 0 : v3 << 6) | (v4 === 64 ? 0 : v4);
+
+			if (bufIdx < byteLen) buffer[bufIdx++] = (chunk >> 16) & 0xff;
+			if (bufIdx < byteLen && v3 !== 64) buffer[bufIdx++] = (chunk >> 8) & 0xff;
+			if (bufIdx < byteLen && v4 !== 64) buffer[bufIdx++] = chunk & 0xff;
 		}
-		array = binary;
+
+		return buffer;
 	}
-
-	const answer: string[] = [];
-	let a: number | null = null;
-	let b: number | null = null;
-	let c: number | null = null;
-	let d: number | null = null;
-
-	for (let i = 0; i < array.length; i++) {
-		switch (i % 3) {
-			case 0:
-				a = (array[i] >> 2) & 0x3f;
-				b = (array[i] & 0x03) << 4;
-				break;
-			case 1:
-				b = (b ?? 0) | ((array[i] >> 4) & 0xf);
-				c = (array[i] & 0xf) << 2;
-				break;
-			case 2:
-				c = (c ?? 0) | ((array[i] >> 6) & 0x03);
-				d = array[i] & 0x3f;
-				answer.push(getChar(a ?? 0));
-				answer.push(getChar(b ?? 0));
-				answer.push(getChar(c));
-				answer.push(getChar(d));
-				a = null;
-				b = null;
-				c = null;
-				d = null;
-				break;
-		}
-	}
-
-	if (a !== null) {
-		answer.push(getChar(a));
-		answer.push(getChar(b ?? 0));
-		if (c === null) {
-			answer.push('=');
-		} else {
-			answer.push(getChar(c));
-		}
-
-		if (d === null) {
-			answer.push('=');
-		}
-	}
-
-	return answer.join('');
-};
-
-const decode = (str: string) => {
-	let len = Math.floor((str.length * 3) / 4);
-	if (str.charAt(str.length - 1) === '=') {
-		len--;
-		if (str.charAt(str.length - 2) === '=') {
-			len--;
-		}
-	}
-
-	const arr = newBinary(len);
-
-	let one: number | null = null;
-	let two: number | null = null;
-	let three: number | null = null;
-
-	let j = 0;
-
-	for (let i = 0; i < str.length; i++) {
-		const c = str.charAt(i);
-		const v = getVal(c);
-		if (v === -2) {
-			throw new Error('invalid base64 string');
-		}
-		switch (i % 4) {
-			case 0:
-				if (v < 0) {
-					throw new Error('invalid base64 string');
-				}
-
-				one = v << 2;
-				break;
-			case 1:
-				if (v < 0) {
-					throw new Error('invalid base64 string');
-				}
-
-				one = (one ?? 0) | (v >> 4);
-				arr[j++] = one;
-				two = (v & 0x0f) << 4;
-				break;
-			case 2:
-				if (v >= 0) {
-					two = (two ?? 0) | (v >> 2);
-					arr[j++] = two;
-					three = (v & 0x03) << 6;
-				}
-
-				break;
-			case 3:
-				if (v >= 0) {
-					arr[j++] = (three ?? 0) | v;
-				}
-
-				break;
-		}
-	}
-
-	return arr;
-};
-
-export const Base64 = { encode, decode, newBinary };
+}
